@@ -1,6 +1,15 @@
 substitutions:
   name: m5stack-atom-echo
   friendly_name: M5Stack Atom Echo
+  STATE_IDLE: "0"
+  STATE_LISTENING: "1"
+  STATE_THINKING: "2"
+  STATE_SPEAKING: "3"
+  STATE_VAD: "4"
+  STATE_RINGING: "5"
+  STATE_OTA: "7"
+  STATE_DISCONNECTED: "8"
+  STATE_ERROR: "9"
 
 esphome:
   name: ${name}
@@ -8,23 +17,71 @@ esphome:
   friendly_name: ${friendly_name}
   min_version: 2025.5.0
 
+  on_boot:
+    priority: -100 # Runs right after components initialize
+    then:
+      - lambda: |-
+          auto load_ui_config = [](auto &ui_light, auto &light_config, std::string &effect_config) {
+            auto call = ui_light->make_call();
+            
+            call.set_state(light_config.get_state());
+            call.set_brightness(light_config.get_brightness());
+            call.set_color_brightness(light_config.get_color_brightness());
+            call.set_red(light_config.get_red());
+            call.set_green(light_config.get_green()); 
+            call.set_blue(light_config.get_blue());
+            call.set_effect(effect_config); // Applies saved effect configuration
+
+            call.perform();
+          };
+          
+          // Pass configs AND active effect states down to the UI components
+          load_ui_config(id(listening_light), id(listening_light_config), id(listening_light_effect));
+          load_ui_config(id(vad_light), id(vad_light_config), id(vad_light_effect));
+
+          // 🔓 Lower the guard: It is now safe to capture HA UI changes in flash
+          id(boot_complete) = true;
+
+api:
+logger:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
 esp32:
   board: m5stack-atom
   cpu_frequency: 240MHz
   framework:
     type: esp-idf
-
-logger:
-api:
+    sdkconfig_options:
+      CONFIG_ESP32_WIFI_AMPDU_TX_ENA: "n" # Frees up some WiFi memory overhead
+    advanced: 
+      sram1_as_iram: True
 
 ota:
   - platform: esphome
     id: ota_esphome
-
-wifi:
-  ap:
-
-captive_portal:
+    on_begin:
+      then:
+        - light.turn_on:
+            id: led
+            brightness: 100%
+            red: 100%
+            green: 0%
+            blue: 100%  # Sizzling Magenta/Purple for OTA mode
+            transition_length: 0s
+        - lambda: 'ESP_LOGE("OTA", "Update started!");'
+    on_end:
+      then:
+        # - light.turn_off: led  # Turns off right before the reboot
+    on_error:
+      then:
+        - light.turn_on:
+            id: led
+            red: 100%
+            green: 0%
+            blue: 0%   # Solid Red if something went wrong
 
 button:
   - platform: factory_reset
@@ -52,8 +109,8 @@ speaker:
     dac_type: external
     bits_per_sample: 16bit
     sample_rate: 16000
-    channel: stereo  # The Echo has poor playback audio quality when using mon audio
-    buffer_duration: 60ms
+    channel: stereo #mono  # The Echo has poor playback audio quality when using mon audio
+    buffer_duration: 60ms #100ms
 
 media_player:
   - platform: speaker
@@ -62,7 +119,8 @@ media_player:
     announcement_pipeline:
       speaker: echo_speaker
       format: WAV
-    buffer_size: 6000
+    # codec_support_enabled: false
+    buffer_size: 8192
     volume_min: 0.4
     files:
       - id: timer_finished_wave_file
@@ -73,20 +131,79 @@ media_player:
             - microphone.is_capturing:
           then:
             - script.execute: stop_wake_word
-      - light.turn_on:
-          id: led
-          blue: 100%
-          red: 0%
-          green: 0%
-          brightness: 100%
-          effect: none
+      - script.execute:
+          id: change_led_state
+          state: ${STATE_SPEAKING}
     on_idle:
-      - script.execute: start_wake_word
-      - script.execute: reset_led
+      - script.execute: restart_va_pipeline
+
+globals:
+  # 🔐 Guard flag to prevent the boot feedback loop
+  - id: boot_complete
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  - id: should_listen_again
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  
+  - id: wake_word_location_local
+    type: bool
+    restore_value: False
+  
+  - id: current_va_state
+    type: int
+    restore_value: no
+    initial_value: '0' # Defaults to STATE_IDLE
+
+  #Default light values
+  - id: listening_light_config
+    type: esphome::light::LightColorValues
+    restore_value: yes
+    # 💡 An inline C++ block that sets up your default state without any external files:
+    initial_value: |-
+      []() { esphome::light::LightColorValues v; v.set_brightness(1.0f); 
+        v.set_red(0.15f); v.set_green(1.0f); v.set_blue(0.15f); v.set_state(true); return v; }()
+  - id: listening_light_effect
+    type: std::string
+    restore_value: yes
+    initial_value: '"Slow Pulse"'
+  - id: vad_light_config
+    type: esphome::light::LightColorValues
+    restore_value: yes
+    # 💡 An inline C++ block that sets up your default state without any external files:
+    initial_value: |-
+      []() { esphome::light::LightColorValues v; v.set_brightness(1.0f); 
+        v.set_red(0.17f); v.set_green(1.0f); v.set_blue(0.46f); v.set_state(true); return v; }()
+  - id: vad_light_effect
+    type: std::string
+    restore_value: yes
+    initial_value: '"Fast Pulse"'
+
+micro_wake_word:
+  id: mww
+  on_wake_word_detected:
+    - voice_assistant.start:
+        wake_word: !lambda return wake_word;
+  vad:
+    # model: github://esphome/micro-wake-word-models/models/v2/vad.json@main
+  models:
+    - model: okay_nabu
+      id: okay_nabu
+    - model: hey_mycroft
+      id: hey_mycroft
+    - model: hey_jarvis
+      id: hey_jarvis
+    - model: "https://raw.githubusercontent.com/esphome/micro-wake-word-models/refs/heads/main/models/v2/experiments/choo_choo_homie.json"
+      id: choo_choo_homie
 
 voice_assistant:
   id: va
-  micro_wake_word:
+  micro_wake_word: # mww
+  # speaker: echo_speaker # Can't be enabled together with media_player, and would disable wake word selection in HA
+  
   microphone:
     microphone: echo_microphone
     channels: 0
@@ -94,29 +211,120 @@ voice_assistant:
   media_player: echo_media_player
   noise_suppression_level: 2
   auto_gain: 31dBFS
+  conversation_timeout: 300s
   on_listening:
-    - light.turn_on:
-        id: led
-        blue: 100%
-        red: 0%
-        green: 0%
-        effect: "Slow Pulse"
+    - lambda: 'ESP_LOGD("\033[0;33mvoice_assistant_handlers\033[0m", "Listening handler");'
+    - script.execute:
+        id: change_led_state
+        state: ${STATE_LISTENING}
+
+    # Start the timer the moment the microphone opens
+    - script.execute: listen_timeout_timer
+
+  on_idle: 
+    - lambda: 'ESP_LOGD("\033[0;33mvoice_assistant_handlers\033[0m", "Idle handler");'
+    - script.execute:
+        id: change_led_state
+        state: ${STATE_IDLE}
+    - script.execute: restart_va_pipeline
+
+      
+  on_start: 
+    - lambda: 'ESP_LOGD("\033[0;33mvoice_assistant_handlers\033[0m", "Start handler");'
+    - script.execute:
+        id: change_led_state
+        state: ${STATE_IDLE}
+      
+  on_stt_vad_start: 
+    - lambda: 'ESP_LOGD("\033[0;33mvoice_assistant_handlers\033[0m", "STT VAD Start handler");'
+    - script.execute:
+        id: change_led_state
+        state: ${STATE_VAD}
+      
   on_stt_vad_end:
-    - light.turn_on:
-        id: led
-        blue: 100%
-        red: 0%
-        green: 0%
-        effect: "Fast Pulse"
+    - lambda: 'ESP_LOGD("\033[0;33mvoice_assistant_handlers\033[0m", "STT VAD End handler");'
+    - script.execute:
+        id: change_led_state
+        state: ${STATE_THINKING}
+
+  on_stt_end: 
+    - lambda: 'ESP_LOGD("\033[0;33mvoice_assistant_handlers\033[0m", "STT End handler");'
+    - text.set:
+        id: last_stt
+        # filter out string in parenthesis as some stt indicate noise this way "(music)", "(white noise)", ...
+        value: !lambda |-
+              std::string s = x.c_str();
+              while (!s.empty() && isspace(s.back())) {
+                s.pop_back();
+              }
+              id(last_stt).state = s;
+              return s;
+
+    - text.set:
+        id: last_stt
+        value: !lambda 'return x.c_str();'
+
+    # If the server successfully finishes processing speech, 
+    # stop the timer so it doesn't force-quit prematurely.
+    - script.stop: listen_timeout_timer
+
+
   on_tts_start:
-    - light.turn_on:
-        id: led
-        blue: 100%
-        red: 0%
-        green: 0%
-        brightness: 100%
-        effect: none
-  on_end:
+    - lambda: 'ESP_LOGD("\033[0;33mvoice_assistant_handlers\033[0m", "TTS Start handler");'
+    - script.execute:
+        id: change_led_state
+        state: ${STATE_SPEAKING}
+    - lambda: |-
+       std::string s = x.c_str();
+       bool has_question = (s.find('?') != std::string::npos);
+       
+       // Decide if we should listen again based on your two modes
+       if (id(follow_up_mode).state) {
+           id(should_listen_again) = true;
+       } else if (id(conversation_mode).state && has_question) {
+           id(should_listen_again) = true;
+       } else {
+           id(should_listen_again) = false;
+       }
+
+    - text.set:
+        id: last_tts
+        value: !lambda 'return x.c_str();'
+    - if:
+        condition:
+          switch.is_on: enable_announce_media_player_tts
+        then:
+          - lambda: 'ESP_LOGD("\033[0;33mvoice_assistant_handlers" ESPHOME_LOG_COLOR(LOG_COLOR_D), "Notify TTS %s %s", id(notify_service_tts).state.c_str(), x.c_str());'
+          - homeassistant.action:
+              action: !lambda 'return id(notify_service_tts).state;'
+              data: 
+                entity_id: !lambda 'return id(announcement_media_player_tts).state;'
+                message: !lambda 'return x.c_str();'
+
+  on_tts_end:
+    - lambda: 'ESP_LOGD("\033[0;33mvoice_assistant_handlers\033[0m", "TTS End handler");'
+    - if:
+        condition:
+          switch.is_on: enable_announce_media_player_wav
+        then:
+          - homeassistant.service:
+              service: media_player.play_media
+              data:
+                entity_id: !lambda 'return id(announcement_media_player_wav).state;'
+                media_content_id: !lambda 'return x;'
+                media_content_type: music
+                announce: "true" # Optional, but often helpful for some players
+
+  # on_tts_stream_start: 
+  #   - lambda: 'ESP_LOGD("\033[0;33mvoice_assistant_handlers\033[0m", "TTS Stream Start handler");'
+
+  # Fired when the hardware actually stops pumping audio to the speaker
+  # on_tts_stream_end:
+  #   - lambda: 'ESP_LOGD("\033[0;33mvoice_assistant_handlers\033[0m", "TTS Stream End handler");'
+
+
+  on_end: 
+    - lambda: 'ESP_LOGD("\033[0;33mvoice_assistant_handlers\033[0m", "On End handler");'
     # Handle the "nevermind" case where there is no announcement
     - wait_until:
         condition:
@@ -136,35 +344,42 @@ voice_assistant:
                       speaker.is_playing:
           - lambda: id(va).set_use_wake_word(false);
           - micro_wake_word.start:
-    - script.execute: reset_led
+    - script.execute:
+        id: change_led_state
+        state: ${STATE_IDLE}
+
   on_error:
-    - light.turn_on:
-        id: led
-        red: 100%
-        green: 0%
-        blue: 0%
-        brightness: 100%
-        effect: none
+    # If there is an error (like "no text recognized"), STOP everything.
+    - lambda: 'ESP_LOGE(ESPHOME_LOG_COLOR("33") "voice_assistant_handlers" ESPHOME_LOG_COLOR(LOG_COLOR_E), "On Error handler");'
+
+    - script.stop: listen_timeout_timer
+
+    - script.execute:
+        id: change_led_state
+        state: ${STATE_ERROR}
     - delay: 2s
-    - script.execute: reset_led
   on_client_connected:
+    - lambda: 'ESP_LOGD("\033[0;33mvoice_assistant_handlers\033[0m", "Client Connected handler");'
     - delay: 2s  # Give the api server time to settle
     - script.execute: start_wake_word
+    - script.execute: update_led_state
   on_client_disconnected:
+    - delay: 0s
+    - lambda: 'ESP_LOGD("\033[0;33mvoice_assistant_handlers\033[0m", "Client Disconnect handler");'
+    - script.execute:
+        id: change_led_state
+        state: ${STATE_DISCONNECTED}
     - script.execute: stop_wake_word
   on_timer_finished:
+    - lambda: 'ESP_LOGD("\033[0;33mvoice_assistant_handlers\033[0m", "Timer Finished handler");'
     - script.execute: stop_wake_word
     - wait_until:
         not:
           microphone.is_capturing:
     - switch.turn_on: timer_ringing
-    - light.turn_on:
-        id: led
-        red: 0%
-        green: 100%
-        blue: 0%
-        brightness: 100%
-        effect: "Fast Pulse"
+    - script.execute:
+        id: change_led_state
+        state: ${STATE_RINGING}
     - wait_until:
         - switch.is_off: timer_ringing
     - light.turn_off: led
@@ -202,15 +417,15 @@ binary_sensor:
 light:
   - platform: esp32_rmt_led_strip
     id: led
-    name: None
-    disabled_by_default: true
+    name: LED
+    disabled_by_default: False
     entity_category: config
     pin: GPIO27
     default_transition_length: 0s
     chipset: SK6812
     num_leds: 1
     rgb_order: grb
-    effects:
+    effects: &light_effects
       - pulse:
           name: "Slow Pulse"
           transition_length: 250ms
@@ -224,38 +439,55 @@ light:
           min_brightness: 50%
           max_brightness: 100%
 
+  # --- Fake Configuration UI Entities ---
+  - platform: rgb
+    name: "Voice Listening UI Config"
+    id: listening_light
+    entity_category: config
+    # restore_mode: RESTORE_DEFAULT_ON # removed, handled by the globals
+    red: fake_r
+    green: fake_g
+    blue: fake_b
+    effects: *light_effects
+    on_state:
+      - lambda: |-
+          if (id(boot_complete)) {
+            id(listening_light_config) = id(listening_light).remote_values;
+            id(listening_light_effect) = id(listening_light).get_effect_name();
+          }
+
+  - platform: rgb
+    name: "Voice Acivity Detection Config"
+    id: vad_light
+    entity_category: config
+    # restore_mode: RESTORE_DEFAULT_ON  # removed, handled by the globals
+    red: fake_r
+    green: fake_g
+    blue: fake_b
+    effects: *light_effects
+    on_state:
+      - lambda: |-
+          if (id(boot_complete)) {
+            id(vad_light_config) = id(vad_light).remote_values;
+            id(vad_light_effect) = id(vad_light).get_effect_name();
+          }
+
+# Create empty float containers to hold the UI values in memory
+output:
+  - platform: template
+    id: fake_r
+    type: float
+    write_action: []
+  - platform: template
+    id: fake_g
+    type: float
+    write_action: []
+  - platform: template
+    id: fake_b
+    type: float
+    write_action: []
+
 script:
-  - id: reset_led
-    then:
-      - if:
-          condition:
-            - lambda: |-
-                return id(wake_word_engine_location).current_option() == "On device";
-            - switch.is_on: use_listen_light
-          then:
-            - light.turn_on:
-                id: led
-                red: 100%
-                green: 89%
-                blue: 71%
-                brightness: 60%
-                effect: none
-          else:
-            - if:
-                condition:
-                  - lambda: |-
-                      return id(wake_word_engine_location).current_option() == "On device";
-                  - switch.is_on: use_listen_light
-                then:
-                  - light.turn_on:
-                      id: led
-                      red: 0%
-                      green: 100%
-                      blue: 100%
-                      brightness: 60%
-                      effect: none
-                else:
-                  - light.turn_off: led
   - id: start_wake_word
     then:
       - if:
@@ -293,6 +525,195 @@ script:
               return id(wake_word_engine_location).current_option() == "On device";
           then:
             - micro_wake_word.stop:
+  - id: listen_timeout_timer
+    mode: restart
+    then:
+      - delay: !lambda return id(listen_timeout).state * 1000;
+      - logger.log: "Timeout reached! No speech detected, stop listening."
+      - voice_assistant.stop:
+
+  - id: restart_va_pipeline
+    then:
+      - if:
+          condition:
+            lambda: 'return id(should_listen_again);'
+          then:
+            - lambda: 'ESP_LOGD("\033[0;32mvoice_assistant_custom\033[0m", "Question detected. Leaving mic open for reply.");'
+            - delay: 500ms  # Increased delay for the Atom Echo's noisy DAC
+            - lambda: 'id(should_listen_again) = false;' # Reset
+            - lambda: id(va).set_use_wake_word(false);
+            - lambda: 'ESP_LOGD("\033[0;32mvoice_assistant_custom\033[0m", "Wake word disabled");'
+            - voice_assistant.start: 
+            - lambda: 'ESP_LOGD("\033[0;32mvoice_assistant_custom\033[0m", "VA Started.");'
+          else:
+            # If no conversation, go back to waiting for wake word
+            # Restart only mWW if enabled; streaming wake words automatically restart
+            - lambda: 'ESP_LOGD("\033[0;32mvoice_assistant_custom\033[0m", "No follow-up needed. Back to Wake Word mode.");'
+            - script.execute: start_wake_word
+            - script.execute: 
+                id: change_led_state
+                state: ${STATE_IDLE}
+
+  - id: change_led_state
+    parameters:
+      state: int
+    then:
+      - globals.set:
+          id: current_va_state
+          value: !lambda "return state;"
+      - script.execute: update_led_state
+      
+  - id: update_led_state
+    mode: restart  # Crucial: instantly kills any running light transitions to switch states immediately
+    then:
+      - lambda: |-
+          // Define reusable UI parsing function
+          auto apply_ui_config = [](auto &ui_light, auto &call) {
+            if (!ui_light->remote_values.get_state()) {
+              call.set_state(false);
+            } else {
+              call.set_brightness(ui_light->remote_values.get_brightness());
+              call.set_rgb(
+                ui_light->remote_values.get_red(),
+                ui_light->remote_values.get_green(),
+                ui_light->remote_values.get_blue()
+              );
+
+              std::string current_effect = ui_light->get_effect_name();
+              if (current_effect == "None") {
+                call.set_effect("none");
+              } else {
+                call.set_effect(current_effect.c_str());
+              }
+            }
+          };
+
+          auto call = id(led).make_call();
+          int state_code = id(current_va_state); // Pulls the stored last state
+
+          call.set_effect("none");
+          call.set_brightness(1.0);
+          call.set_state(true);
+
+          if (state_code == ${STATE_IDLE}) {
+            if (id(use_listen_light)) {
+              // Dynamic check: Change color depending on where WW detection is living
+              if (id(wake_word_location_local)) {
+                call.set_rgb(0.0, 1.0, 0.0); // Green if local
+              } else {
+                call.set_rgb(0.0, 0.6, 1.0); // Cyan if cloud-based
+              }
+            }
+            else {
+              call.set_state(false);
+            }
+          } 
+          else if (state_code == ${STATE_LISTENING}) {
+            apply_ui_config(id(listening_light), call);
+          } 
+          else if (state_code == ${STATE_VAD}) {
+            apply_ui_config(id(vad_light), call);
+          } 
+          else if (state_code == ${STATE_THINKING}) {
+            call.set_rgb(1.0, 0.5, 0.0);   // Orange
+            call.set_effect("Fast pulse");
+          } 
+          else if (state_code == ${STATE_SPEAKING}) {
+            call.set_rgb(1.0, 0.5, 0.0);   // Orange
+          } 
+          else if (state_code == ${STATE_RINGING}) {
+            call.set_rgb(1.0, 0.5, 0.0);   // Orange
+            ESP_LOGD("Coloring", "Setting Ringing Color");
+          } 
+          else if (state_code == ${STATE_ERROR}) {
+            call.set_rgb(1.0, 0.0, 0.0);   // Red
+            ESP_LOGE("Coloring", "Setting Error Color");
+
+          } 
+          else if (state_code == ${STATE_DISCONNECTED}) {
+            call.set_rgb(0.3, 0.0, 0.0);   // Dim Red
+          }
+          if (state_code == ${STATE_OTA}) {
+            call.set_effect("none"); 
+            call.set_rgb(0.6, 0.0, 0.9); // Turn real light solid Purple
+          }
+
+          call.perform();
+
+select:
+  - platform: template
+    entity_category: config
+    name: Wake word engine location
+    id: wake_word_engine_location
+    optimistic: true
+    restore_value: true
+    options:
+      - In Home Assistant
+      - On device
+    initial_option: On device
+    on_value:
+      - if:
+          condition:
+            lambda: return x == "In Home Assistant";
+          then:
+            - micro_wake_word.stop:
+            - delay: 500ms
+            - lambda: id(va).set_use_wake_word(true);
+            - voice_assistant.start_continuous:
+      - if:
+          condition:
+            lambda: return x == "On device";
+          then:
+            - lambda: id(va).set_use_wake_word(false);
+            - voice_assistant.stop:
+            - delay: 500ms
+            - micro_wake_word.start:
+
+text:
+  - platform: template
+    name: "Announcement Media Player Audio"
+    id: announcement_media_player_wav
+    mode: TEXT
+    entity_category: config
+    icon: "mdi:speaker"
+    optimistic: True
+    restore_value: true
+    pattern: "media_player.*"
+  - platform: template
+    name: "Announcement Notify TTS Service"
+    id: notify_service_tts
+    mode: TEXT
+    entity_category: config
+    icon: "mdi:speaker-message"
+    initial_value: notify.send_message
+    optimistic: True
+    restore_value: true
+    # pattern: "notify.*"
+  - platform: template
+    name: "Announcement Notify TTS Target"
+    id: announcement_media_player_tts
+    mode: TEXT
+    initial_value: "" 
+    entity_category: config
+    icon: "mdi:speaker-message"
+    optimistic: True
+    restore_value: true
+    # pattern: "notify.*"
+  - platform: template
+    id: last_stt
+    name: "Last STT"
+    mode: TEXT
+    initial_value: "none"
+    entity_category: diagnostic
+    optimistic: True
+  - platform: template
+    id: last_tts
+    name: "Last TTS"
+    mode: TEXT
+    initial_value: "none"
+    entity_category: diagnostic
+    optimistic: True
+
 
 switch:
   - platform: template
@@ -302,9 +723,9 @@ switch:
     restore_mode: RESTORE_DEFAULT_ON
     entity_category: config
     on_turn_on:
-      - script.execute: reset_led
+      - script.execute: update_led_state
     on_turn_off:
-      - script.execute: reset_led
+      - script.execute: update_led_state
   - platform: template
     id: timer_ringing
     optimistic: true
@@ -336,44 +757,69 @@ switch:
       - delay: 15min
       - switch.turn_off: timer_ringing
 
-select:
   - platform: template
+    name: "Announce Wav on external media player"
+    id: enable_announce_media_player_wav
+    optimistic: true
     entity_category: config
-    name: Wake word engine location
-    id: wake_word_engine_location
+    icon: "mdi:speaker"
+    restore_mode: RESTORE_DEFAULT_OFF
+
+  - platform: template
+    name: "Announce TTS on external media player"
+    id: enable_announce_media_player_tts
+    optimistic: true
+    entity_category: config
+    icon: "mdi:speaker-message"
+    restore_mode: RESTORE_DEFAULT_OFF
+
+  - platform: template
+    name: "Enable response on local speaker"
+    id: enable_announce_local_speaker
+    optimistic: true
+    icon: "mdi:speaker"
+    entity_category: config
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_off: 
+      then:
+        - speaker.mute_on: echo_speaker
+    on_turn_on: 
+      then:
+        - speaker.mute_off: echo_speaker
+
+  - platform: template
+    name: "Follow-up Mode"
+    id: follow_up_mode
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    icon: "mdi:repeat-once"
+    entity_category: config
+    on_turn_off:
+      then:
+        - logger.log: "Follow-up mode disabled, stopping continuous listening"
+        - voice_assistant.stop
+    
+  - platform: template
+    name: "Conversation Mode"
+    id: conversation_mode
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    icon: "mdi:chat-question"
+    entity_category: config
+    on_turn_off:
+      then:
+        - logger.log: "Follow-up mode disabled, stopping continuous listening"
+        - voice_assistant.stop
+    
+number:
+  - platform: template
+    name: "Continuous Listening Timeout"
+    id: listen_timeout
+    min_value: 5
+    max_value: 60
+    step: 1
     optimistic: true
     restore_value: true
-    options:
-      - In Home Assistant
-      - On device
-    initial_option: On device
-    on_value:
-      - if:
-          condition:
-            lambda: return x == "In Home Assistant";
-          then:
-            - micro_wake_word.stop:
-            - delay: 500ms
-            - lambda: id(va).set_use_wake_word(true);
-            - voice_assistant.start_continuous:
-      - if:
-          condition:
-            lambda: return x == "On device";
-          then:
-            - lambda: id(va).set_use_wake_word(false);
-            - voice_assistant.stop:
-            - delay: 500ms
-            - micro_wake_word.start:
+    initial_value: 10
+    entity_category: config
 
-micro_wake_word:
-  on_wake_word_detected:
-    - voice_assistant.start:
-        wake_word: !lambda return wake_word;
-  vad:
-  models:
-    - model: okay_nabu
-      id: okay_nabu
-    - model: hey_mycroft
-      id: hey_mycroft
-    - model: hey_jarvis
-      id: hey_jarvis
