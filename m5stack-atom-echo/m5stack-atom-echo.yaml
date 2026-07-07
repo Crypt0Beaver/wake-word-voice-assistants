@@ -148,6 +148,46 @@ speaker:
     bits_per_sample: 16bit
     sample_rate: 16000
     channel: stereo # Using stereo configuration resolves audio distortion inherent to mono playback on Atom Echo
+    buffer_duration: 60ms
+
+media_player:
+  - platform: speaker
+    name: None
+    id: echo_media_player
+    announcement_pipeline:
+      speaker: echo_speaker
+      format: WAV
+    buffer_size: 8192
+    volume_min: 0.4
+    files:
+      - id: timer_finished_wave_file
+        file: https://github.com/esphome/wake-word-voice-assistants/raw/main/sounds/timer_finished.wav
+      - id: listening_wave_file
+        file: https://github.com/Crypt0Beaver/wake-word-voice-assistants/raw/main/sounds/listening.wav
+      - id: listening_ended_wave_file
+        file: https://github.com/Crypt0Beaver/wake-word-voice-assistants/raw/main/sounds/listening_ended.wav
+      - id: listening_canceled_wave_file
+        file: https://github.com/Crypt0Beaver/wake-word-voice-assistants/raw/main/sounds/listening_canceled.wav
+      - id: confirm_wave_file
+        file: https://github.com/Crypt0Beaver/wake-word-voice-assistants/raw/main/sounds/confirm.wav
+      - id: error_wave_file
+        file: https://github.com/Crypt0Beaver/wake-word-voice-assistants/raw/main/sounds/error.wav
+    on_announcement:
+      - globals.set:
+          id: is_media_player_busy
+          value: 'true'
+      - if:
+          condition:
+            - microphone.is_capturing:
+          then:
+            - script.execute: stop_wake_word
+      - script.execute:
+          id: change_led_state
+          state: ${STATE_SPEAKING}
+    on_idle:
+      - globals.set:
+          id: is_media_player_busy
+          value: 'false'
 
 binary_sensor:
   - platform: gpio
@@ -552,45 +592,6 @@ voice_assistant:
         - switch.is_off: timer_ringing
     - light.turn_off: led
     - switch.turn_off: timer_ringing
-
-media_player:
-  - platform: speaker
-    name: None
-    id: echo_media_player
-    announcement_pipeline:
-      speaker: echo_speaker
-      format: WAV
-    buffer_size: 8192
-    volume_min: 0.4
-    files:
-      - id: timer_finished_wave_file
-        file: https://github.com/esphome/wake-word-voice-assistants/raw/main/sounds/timer_finished.wav
-      - id: listening_wave_file
-        file: https://github.com/Crypt0Beaver/wake-word-voice-assistants/raw/main/sounds/listening.wav
-      - id: listening_ended_wave_file
-        file: https://github.com/Crypt0Beaver/wake-word-voice-assistants/raw/main/sounds/listening_ended.wav
-      - id: listening_canceled_wave_file
-        file: https://github.com/Crypt0Beaver/wake-word-voice-assistants/raw/main/sounds/listening_canceled.wav
-      - id: confirm_wave_file
-        file: https://github.com/Crypt0Beaver/wake-word-voice-assistants/raw/main/sounds/confirm.wav
-      - id: error_wave_file
-        file: https://github.com/Crypt0Beaver/wake-word-voice-assistants/raw/main/sounds/error.wav
-    on_announcement:
-      - globals.set:
-          id: is_media_player_busy
-          value: 'true'
-      - if:
-          condition:
-            - microphone.is_capturing:
-          then:
-            - script.execute: stop_wake_word
-      - script.execute:
-          id: change_led_state
-          state: ${STATE_SPEAKING}
-    on_idle:
-      - globals.set:
-          id: is_media_player_busy
-          value: 'false'
 
 # ------------------------------------------------------------------------------
 # 6. LIGHTS & VISUAL FEEDBACK INTERACTION UI
