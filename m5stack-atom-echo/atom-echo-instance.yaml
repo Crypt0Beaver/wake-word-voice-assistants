@@ -1,11 +1,14 @@
 # Check the readme for more information on how to use this package: http://crypt0beaver.github.io/wake-word-voice-assistants/m5stack-atom-echo/readme.md
 
 substitutions:
-  name: "atom-echo-instant"
+  name: "atom-echo-instance"
   friendly_name: New Instance Atom Echo
+
+  # Optional, prevents to have to enter the settings in HA after a factory reset
   announcement_media_player_wav_default: media_player.living_room
   announcement_tts_target_default: notify.living_room_echo_speak
   notify_service_tts_default: notify.send_message
+
   # override the following if you want to use local files:
   # sounds_base_url: "http://url-to-your-sounds/"
 
