@@ -4,7 +4,7 @@
 #              voice assistant with local/remote wake word support, dynamic LED UI
 #              customization, ambient noise filtering, and multi-room audio routing.
 # Author: Crypt0Beaver
-# Version: 1.0.0
+# Version: 1.1.0
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -19,8 +19,16 @@ substitutions:
   announcement_tts_target_default: ""
   notify_service_tts_default: "notify.send_message"
   
-  # Remote path hosting asset audio clips
-  sounds_path: "https://crypt0beaver.github.io/wake-word-voice-assistants/sounds/"
+# Base host path (can be overridden to point to local Home Assistant or another CDN)
+  sounds_base_url: "https://github.com/Crypt0Beaver/wake-word-voice-assistants/raw/main/sounds/"
+  
+  # Individual sound file overrides
+  sound_timer_finished: "https://github.com/esphome/wake-word-voice-assistants/raw/main/sounds/timer_finished.wav"
+  sound_listening: "${sounds_base_url}listening.wav"
+  sound_listening_ended: "${sounds_base_url}listening_ended.wav"
+  sound_listening_canceled: "${sounds_base_url}listening_canceled.wav"
+  sound_confirm: "${sounds_base_url}confirm.wav"
+  sound_error: "${sounds_base_url}error.wav"
 
   # Static State Machine IDs for LED status indication (Do not modify)
   STATE_IDLE: "0"
@@ -45,7 +53,7 @@ esphome:
   # 🏢 Native project metadata tracking
   project:
     name: "Crypt0Beaver.m5stack-atom-echo"
-    version: "1.0.0"
+    version: "1.1.0"
 
   # Bootstrap Initialization Script
   on_boot:
@@ -161,17 +169,17 @@ media_player:
     volume_min: 0.4
     files:
       - id: timer_finished_wave_file
-        file: https://github.com/esphome/wake-word-voice-assistants/raw/main/sounds/timer_finished.wav
+        file: ${sound_timer_finished}
       - id: listening_wave_file
-        file: https://github.com/Crypt0Beaver/wake-word-voice-assistants/raw/main/sounds/listening.wav
+        file: ${sound_listening}
       - id: listening_ended_wave_file
-        file: https://github.com/Crypt0Beaver/wake-word-voice-assistants/raw/main/sounds/listening_ended.wav
+        file: ${sound_listening_ended}
       - id: listening_canceled_wave_file
-        file: https://github.com/Crypt0Beaver/wake-word-voice-assistants/raw/main/sounds/listening_canceled.wav
+        file: ${sound_listening_canceled}
       - id: confirm_wave_file
-        file: https://github.com/Crypt0Beaver/wake-word-voice-assistants/raw/main/sounds/confirm.wav
+        file: ${sound_confirm}
       - id: error_wave_file
-        file: https://github.com/Crypt0Beaver/wake-word-voice-assistants/raw/main/sounds/error.wav
+        file: ${sound_error}
     on_announcement:
       - globals.set:
           id: is_media_player_busy
@@ -607,7 +615,7 @@ light:
     default_transition_length: 0s
     chipset: SK6812
     num_leds: 1
-    rgb_order: grb
+    channel_colors: grb
     effects: &light_effects
       - pulse:
           name: "Slow Pulse"
@@ -1155,7 +1163,7 @@ script:
           condition:
             switch.is_on: enable_announce_local_speaker
           then:
-            - lambda: 'ESP_LOGD("voice_assistant_custom", "Playing system sound locally.");'
+            - lambda: 'ESP_LOGD("voice_assistant_custom", "Playing system sound %s locally.", sound_name.c_str());'
             - globals.set:
                 id: is_media_player_busy
                 value: 'true'
@@ -1211,7 +1219,7 @@ script:
                   entity_id: !lambda 'return id(announcement_media_player_wav).state;'
                   media_content_type: music
                   media_content_id: !lambda |-
-                    return "${sounds_path}" + sound_name + "_44.1kHz.wav";
+                    return "${sounds_base_url}" + sound_name + "_44.1kHz.wav";
                   announce: "true"
 
       # ROUTE 3: Amazon Alexa Native Cloud Sound Library Routing Engine
