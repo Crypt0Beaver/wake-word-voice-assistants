@@ -1,7 +1,3 @@
-Here is the `README.md` file generated based on your configuration files.
-
----
-
 # M5Stack Atom Echo Advanced Voice Assistant
 
 An ESPHome configuration package for the M5Stack Atom Echo, transforming it into an ultra-responsive, state-aware local voice assistant. This project features local and remote wake word support, dynamic LED UI customization directly from Home Assistant, ambient noise filtering, and multi-room audio routing.
