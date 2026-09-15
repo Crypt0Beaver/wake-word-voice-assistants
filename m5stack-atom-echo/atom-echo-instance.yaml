@@ -1,0 +1,36 @@
+# Check the readme for more information on how to use this package: http://crypt0beaver.github.io/wake-word-voice-assistants/m5stack-atom-echo/readme.md
+
+substitutions:
+  name: "atom-echo-instant"
+  friendly_name: New Instance Atom Echo
+  announcement_media_player_wav_default: media_player.living_room
+  announcement_tts_target_default: notify.living_room_echo_speak
+  notify_service_tts_default: notify.send_message
+  # override the following if you want to use local files:
+  # sounds_base_url: "http://url-to-your-sounds/"
+
+packages:
+  m5stack.atom-echo-voice-assistant: github://Crypt0Beaver/wake-word-voice-assistants/m5stack-atom-echo/m5stack-atom-echo.yaml@main
+
+esphome:
+
+# Override this to reduce the number of wake words that are loaded into memory or define other wake words. 
+# This is useful for devices with limited memory.
+micro_wake_word:
+  models:
+    - id: !remove okay_nabu
+    - id: !remove hey_mycroft
+    # - id: !removehey_jarvis
+    - model: "https://raw.githubusercontent.com/esphome/micro-wake-word-models/refs/heads/main/models/v2/experiments/choo_choo_homie.json"
+      id: choo_choo_homie
+
+api:
+  encryption:
+    key: **************
+
+
+logger:
+    
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
