@@ -1,4 +1,4 @@
-# Check the readme for more information on how to use this package: http://crypt0beaver.github.io/wake-word-voice-assistants/m5stack-atom-echo/readme.md
+# Check the readme for more information on how to use this package: https://crypt0beaver.github.io/wake-word-voice-assistants/m5stack-atom-echo/readme.md
 
 substitutions:
   name: "atom-echo-instance"
